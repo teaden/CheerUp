@@ -14,6 +14,15 @@ class ViewController: UIViewController {
     // Main view for showing camera content.
     @IBOutlet weak var previewView: UIView?
     
+    // Outlet for housing inspirational quote
+    @IBOutlet weak var quoteLabel: UILabel!
+    
+    // State variable that changes when frowning is detected
+    var isFrowning: Bool = false
+    
+    // Difference between average of side lip positions and center lip position that determines frowning
+    var frownThreshold: CGFloat = -0.027
+    
     // AVCapture variables to hold sequence data
     var session: AVCaptureSession?
     var previewLayer: AVCaptureVideoPreviewLayer?
@@ -40,6 +49,8 @@ class ViewController: UIViewController {
     
     override func viewDidLoad() {
         super.viewDidLoad()
+        
+        self.quoteLabel.isHidden = true
         
         // setup video for high resolution, drop frames when busy, and front camera
         self.session = self.setupAVCaptureSession()
@@ -105,8 +116,7 @@ class ViewController: UIViewController {
         
         if !results.isEmpty{
             print("Initial Face found... setting up tracking.")
-            
-            
+            self.isFrowning = false
         }
         
         // if we got here, then a face was detected and we have its features saved
@@ -322,26 +332,84 @@ class ViewController: UIViewController {
     
     // Interpret the output of our facial landmark detector
     // this code is called upon succesful completion of landmark detection
-    func landmarksCompletionHandler(request:VNRequest, error:Error?){
-        
+    func landmarksCompletionHandler(request: VNRequest, error: Error?) {
         if error != nil {
             print("FaceLandmarks error: \(String(describing: error)).")
         }
         
-        // any landmarks found that we can display? If not, return
+        // Any landmarks found that we can display? If not, return
         guard let landmarksRequest = request as? VNDetectFaceLandmarksRequest,
               let results = landmarksRequest.results as? [VNFaceObservation] else {
             return
         }
         
-        // Perform all UI updates (drawing) on the main queue, not the background queue on which this handler is being called.
+        var currentLipDiff: CGFloat?    // Current avg difference between left + right corner and mid lips
+   
+        // Loop over the VNFaceObservation data
+        for faceObservation in results {
+            if let landmarks = faceObservation.landmarks,
+               let outerLipsPoints = landmarks.outerLips?.normalizedPoints,
+               !outerLipsPoints.isEmpty {
+                
+                // Find mouth corners and center
+                let mouthLeftCorner = outerLipsPoints.min(by: { $0.x < $1.x })!
+                let mouthRightCorner = outerLipsPoints.max(by: { $0.x < $1.x })!
+                    
+                // Calculate the x-coordinate of the center
+                let mouthCenterX = (mouthLeftCorner.x + mouthRightCorner.x) / 2.0
+
+                // Find top and bottom middle points of the mouth, using mouthCenterX
+                let mouthTopMiddle = outerLipsPoints.min(by: {
+                    abs($0.x - mouthCenterX) < abs($1.x - mouthCenterX) && $0.y < $1.y
+                })!
+                
+                let mouthBottomMiddle = outerLipsPoints.min(by: {
+                    abs($0.x - mouthCenterX) < abs($1.x - mouthCenterX) && $0.y > $1.y
+                })!
+
+                // Calculate mouth center Y position
+                var mouthCenterY = (mouthTopMiddle.y + mouthBottomMiddle.y) / 2.0
+                
+                // Calculate the difference in Y positions between corners and center
+                let leftCornerDiff = mouthLeftCorner.y - mouthCenterY
+                let rightCornerDiff = mouthRightCorner.y - mouthCenterY
+
+                // Use the average of left and right corner diffs
+                currentLipDiff = (leftCornerDiff + rightCornerDiff) / 2.0
+            }
+        }
+        
+        if currentLipDiff! < self.frownThreshold {
+            self.isFrowning = true
+        } else {
+            self.isFrowning = false
+        }
+
         DispatchQueue.main.async {
-            // draw the landmarks using core animation layers
             self.drawFaceObservations(results)
+            
+            // Update UI when frown is detected
+            if self.isFrowning {
+                print("User is frowning.")
+                
+                // Only trigger the below once per frown
+                if self.quoteLabel.isHidden == true {
+                    self.quoteLabel.text = QuoteModel.getRandomQuote()
+                    self.quoteLabel.isHidden = false
+                }
+                
+            // Update UI accordingly when no frown
+            } else {
+                print("User is not frowning.")
+                
+                // Only trigger the below once per normal expression
+                if self.quoteLabel.isHidden == false {
+                    self.quoteLabel.text = ""
+                    self.quoteLabel.isHidden = true
+                }
+            }
         }
     }
-    
-    
 }
 
 
@@ -700,6 +768,15 @@ extension ViewController {
             self.addIndicators(to: faceRectanglePath,
                                faceLandmarksPath: faceLandmarksPath,
                                for: faceObservation)
+        }
+        
+        // Update the strokeColor to red if frowning
+        if self.isFrowning {
+            faceLandmarksShapeLayer.strokeColor = UIColor.red.withAlphaComponent(0.7).cgColor
+            faceRectangleShapeLayer.strokeColor = UIColor.red.withAlphaComponent(0.7).cgColor
+        } else {
+            faceLandmarksShapeLayer.strokeColor = UIColor.yellow.withAlphaComponent(0.7).cgColor
+            faceRectangleShapeLayer.strokeColor = UIColor.green.withAlphaComponent(0.7).cgColor
         }
         
         faceRectangleShapeLayer.path = faceRectanglePath
